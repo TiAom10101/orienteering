@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>定向越野指南针地图</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #10231c; color: #e8f1ec; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; overflow: hidden; }
+  #app { height: 100%; display: flex; flex-direction: column; }
+  #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+  #compass { position: relative; width: 300px; height: 300px; }
+
+  #dialBox { position: absolute; inset: 0; }
+  #dialRotor { position: absolute; inset: 0; transform-origin: 50% 50%; will-change: transform; z-index: 0; }
+  #dial { width: 100%; height: 100%; display: block; }
+  #pointer { position: absolute; top: 0; left: 50%; width: 0; height: 0; transform: translateX(-50%); border-left: 11px solid transparent; border-right: 11px solid transparent; border-top: 20px solid #ff5a3c; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); z-index: 5; }
+
+  #mapRotor { position: absolute; inset: 0; transform-origin: 50% 50%; will-change: transform; z-index: 1; }
+  #mapBox { position: absolute; left: 50%; top: 50%; width: 70%; height: 70%; transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center; }
+  #mapRot { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; transform-origin: 50% 50%; }
+  #mapWrap { position: relative; display: none; flex: none; box-shadow: 0 0 0 2px rgba(255,255,255,.5), 0 4px 18px rgba(0,0,0,.6); background: #fff; }
+  #mapImg { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+  #ov { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  #hint { position: absolute; text-align: center; color: #9fb8ac; font-size: 14px; padding: 0 20px; pointer-events: none; z-index: 2; }
+  #readout { position: absolute; top: 6px; right: 10px; font-size: 15px; font-weight: 600; background: rgba(0,0,0,.45); padding: 3px 9px; border-radius: 10px; z-index: 30; }
+
+  /* ---- 全屏地图模式：指南针缩小到右上角，地图铺满 ---- */
+  #app.full #compass { position: absolute; inset: 0; overflow: hidden; }
+  #app.full #mapBox { width: 100% !important; height: 100% !important; }
+  #app.full #dialBox { inset: auto; top: 8px; right: 8px; width: 104px; height: 104px; }
+  #app.full #dialRotor { z-index: 20; border-radius: 50%; box-shadow: 0 2px 10px rgba(0,0,0,.7); }
+  #app.full #pointer { z-index: 21; border-left-width: 7px; border-right-width: 7px; border-top-width: 13px; }
+  #app.full #readout { right: auto; left: 10px; }
+  #app:not(.full) #followBtn { display: none; }
+  #timer { position: absolute; top: 6px; left: 10px; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; background: rgba(0,0,0,.5); padding: 3px 10px; border-radius: 10px; z-index: 30; cursor: pointer; }
+  #timer.run { color: #ffd400; }
+  #app.full #timer { top: 40px; }
+  .hd { font-size: 12px; color: #6f8f80; margin-top: 2px; }
+
+  #bar { display: grid; gap: 4px; padding: 6px 10px; background: #0b1a15; border-top: 1px solid #234236; }
+  .barBtns { display: flex; gap: 6px; }
+  .barBtns button { flex: 1; padding: 8px 4px; font-size: 13px; }
+  #info { font-size: 12px; color: #9fb8ac; line-height: 1.3; min-height: 16px; }
+  #panel { padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); background: #0b1a15; display: grid; gap: 7px; max-height: 44vh; overflow-y: auto; }
+  #panel.hidden { display: none; }
+  .row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .row label { width: 84px; flex: none; color: #9fb8ac; }
+  .row input[type=range] { flex: 1; }
+  .row input[type=number], .row select { flex: 1; min-width: 0; padding: 7px 8px; border-radius: 8px; border: 1px solid #34524a; background: #10231c; color: #e8f1ec; font-size: 14px; }
+  .row span { width: 44px; text-align: right; flex: none; }
+  .btns { display: flex; gap: 8px; }
+  button, .fileBtn { flex: 1; text-align: center; padding: 10px 6px; border: 0; border-radius: 10px; background: #2f7d5b; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button.alt, .fileBtn.alt { background: #34524a; }
+  button.on { background: #d0007f; }
+  button.rec.on { background: #c43c2c; }
+  input[type=file] { display: none; }
+  .sep { height: 1px; background: #234236; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <div id="readout">0° 北</div>
+    <div id="timer" title="点一下开始/暂停">00:00</div>
+    <div id="compass">
+      <div id="dialBox">
+        <div id="pointer" title="手机朝向"></div>
+        <div id="dialRotor"><svg id="dial" viewBox="-500 -500 1000 1000"></svg></div>
+      </div>
+      <div id="mapRotor">
+        <div id="mapBox"><div id="mapRot"><div id="mapWrap"><img id="mapImg" alt="地图"><svg id="ov"></svg></div></div></div>
+      </div>
+    </div>
+    <div id="hint">点下方「设置」展开，选「上传地图」<br>再点「开启指南针」</div>
+  </div>
+
+  <div id="bar">
+    <div class="barBtns">
+      <button id="toggle" class="alt">▼ 设置</button>
+      <button id="fullBtn" class="alt">全屏</button>
+      <button id="recBtn" class="rec">开始记录</button>
+      <button id="followBtn" class="alt">跟随我: 关</button>
+    </div>
+    <div id="info">未记录</div>
+  </div>
+
+  <div id="panel">
+    <div class="row"><label>预设地点</label><select id="presetSel"><option value="">（无预设）</option></select></div>
+    <div class="btns">
+      <button id="saveBtn">保存当前</button>
+      <button id="saveAsBtn" class="alt">另存为新预设</button>
+      <button id="delBtn" class="alt">删除</button>
+    </div>
+    <div class="sep"></div>
+    <div class="btns">
+      <label class="fileBtn">上传地图<input id="file" type="file" accept="image/*"></label>
+      <button id="startBtn">开启指南针</button>
+      <button id="resetBtn" class="alt">重置</button>
+    </div>
+    <div class="btns">
+      <button id="startPtBtn" class="alt">设起点▲</button>
+      <button id="clearBtn" class="alt">清除路径</button>
+    </div>
+
+    <div class="hd">比例尺（两种方式任选其一）</div>
+    <div class="row"><label>①地图宽度(米)</label><input id="metersW" type="number" min="10" step="10" value="500"></div>
+    <div class="btns">
+      <button id="calBtn" class="alt">②按图上比例尺线标定</button>
+      <button id="measureBtn" class="alt">测距</button>
+    </div>
+    <div class="row"><label>显示比例尺条</label><input id="showBar" type="checkbox" checked></div>
+    <div id="scaleInfo" class="hd"></div>
+
+    <div class="hd">计时器</div>
+    <div class="btns">
+      <button id="timerBtn">开始计时</button>
+      <button id="timerResetBtn" class="alt">清零</button>
+    </div>
+    <div class="row"><label>地图大小</label><input id="size" type="range" min="35" max="92" value="70"><span id="sizeV">70%</span></div>
+    <div class="row"><label>全屏缩放</label><input id="zoom" type="range" min="50" max="400" step="10" value="100"><span id="zoomV">100%</span></div>
+    <div class="row"><label>地图指北校正</label><input id="offset" type="range" min="-180" max="180" value="0"><span id="offsetV">0°</span></div>
+    <div class="row"><label>手动方向</label><input id="manual" type="range" min="0" max="359" value="0"><span id="manualV">0°</span></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  function $(id) { return document.getElementById(id); }
+  var NS = 'http://www.w3.org/2000/svg';
+  function el(parent, tag, attrs, text) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (text !== undefined) e.textContent = text;
+    parent.appendChild(e);
+    return e;
+  }
+
+  // ================= 指南针表盘 =================
+  var svg = $('dial');
+  el(svg, 'circle', { r: 495, fill: '#16342a', stroke: '#c9a86a', 'stroke-width': 8 });
+  el(svg, 'circle', { r: 395, fill: '#0e2119', stroke: '#c9a86a', 'stroke-width': 3 });
+  for (var d = 0; d < 360; d += 5) {
+    var major = d % 30 === 0, mid = d % 10 === 0;
+    var r1 = 490, r2 = major ? 440 : (mid ? 460 : 474);
+    var a = d * Math.PI / 180;
+    el(svg, 'line', {
+      x1: Math.sin(a) * r1, y1: -Math.cos(a) * r1, x2: Math.sin(a) * r2, y2: -Math.cos(a) * r2,
+      stroke: d === 0 ? '#ff5a3c' : '#e8f1ec', 'stroke-width': major ? 5 : 2.5
+    });
+    if (major && d % 90 !== 0) {
+      var tx = Math.sin(a) * 418, ty = -Math.cos(a) * 418;
+      el(svg, 'text', { x: tx, y: ty + 11, 'text-anchor': 'middle', fill: '#9fb8ac', 'font-size': 30,
+        transform: 'rotate(' + d + ' ' + tx + ' ' + ty + ')' }, d);
+    }
+  }
+  [['N', 0, '#ff5a3c'], ['E', 90, '#e8f1ec'], ['S', 180, '#e8f1ec'], ['W', 270, '#e8f1ec']].forEach(function (c) {
+    var aa = c[1] * Math.PI / 180, x = Math.sin(aa) * 418, y = -Math.cos(aa) * 418;
+    el(svg, 'text', { x: x, y: y + 20, 'text-anchor': 'middle', fill: c[2], 'font-size': 58, 'font-weight': 700,
+      transform: 'rotate(' + c[1] + ' ' + x + ' ' + y + ')' }, c[0]);
+  });
+  el(svg, 'polygon', { points: '0,-395 -28,-340 28,-340', fill: '#ff5a3c' });
+
+  // ================= 元素与状态 =================
+  var app = $('app'), stage = $('stage'), compass = $('compass');
+  var dialRotor = $('dialRotor'), mapRotor = $('mapRotor');
+  var mapBox = $('mapBox'), mapRot = $('mapRot'), mapWrap = $('mapWrap'), mapImg = $('mapImg'), ov = $('ov');
+  var hint = $('hint'), readout = $('readout'), info = $('info');
+  var sizeEl = $('size'), sizeV = $('sizeV'), offEl = $('offset'), offV = $('offsetV');
+  var zoomEl = $('zoom'), zoomV = $('zoomV');
+  var manEl = $('manual'), manV = $('manualV'), metersEl = $('metersW');
+  var panel = $('panel'), toggle = $('toggle'), recBtn = $('recBtn'), fullBtn = $('fullBtn'), followBtn = $('followBtn');
+  var startPtBtn = $('startPtBtn'), calBtn = $('calBtn'), presetSel = $('presetSel');
+  var measureBtn = $('measureBtn'), showBar = $('showBar'), scaleInfo = $('scaleInfo');
+  var timerEl = $('timer'), timerBtn = $('timerBtn'), timerResetBtn = $('timerResetBtn');
+
+  var heading = 0, shown = 0, sensorOn = false;
+  var names = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
+  var nw = 0, nh = 0, fitScale = 1;
+  var full = false, follow = false, lastT = '';
+
+  var mode = null, startPt = null, calPts = [], measurePts = [];
+  var tElapsed = 0, tRun = false, tStamp = 0, lastTxt = '';
+  var track = [], cur = null, dist = 0, anchor = null;
+  var tracking = false, watchId = null, fixCount = 0, lastAcc = null, wakeLock = null;
+
+  var db = null, presets = [], currentId = null, currentName = '', currentBlob = null, objUrl = null, autoTimer = null;
+
+  // ================= 尺寸 =================
+  function fit() {
+    if (!nw) return;
+    var bw = mapBox.clientWidth, bh = mapBox.clientHeight;
+    var z = full ? (+zoomEl.value / 100) : 1;
+    fitScale = Math.min(bw / nw, bh / nh) * z;
+    mapWrap.style.width = (nw * fitScale) + 'px';
+    mapWrap.style.height = (nh * fitScale) + 'px';
+  }
+  function sizeCompass() {
+    if (full) {
+      compass.style.width = compass.style.height = '100%';
+    } else {
+      var s = Math.min(stage.clientWidth, stage.clientHeight) * 0.98;
+      if (s < 100) s = 100;
+      compass.style.width = compass.style.height = s + 'px';
+    }
+    fit();
+  }
+  if (window.ResizeObserver) new ResizeObserver(sizeCompass).observe(stage);
+  window.addEventListener('resize', sizeCompass);
+
+  function applySize() { mapBox.style.width = mapBox.style.height = sizeEl.value + '%'; sizeV.textContent = sizeEl.value + '%'; fit(); }
+  function applyZoom() { zoomV.textContent = zoomEl.value + '%'; fit(); }
+  function applyOffset() { mapRot.style.transform = 'rotate(' + offEl.value + 'deg)'; offV.textContent = offEl.value + '°'; render(); }
+  function applyAll() { applySize(); applyZoom(); applyOffset(); updateInfo(); }
+
+  sizeEl.addEventListener('input', function () { applySize(); changed(); });
+  zoomEl.addEventListener('input', function () { applyZoom(); changed(); });
+  offEl.addEventListener('input', function () { applyOffset(); changed(); });
+  metersEl.addEventListener('input', function () { render(); changed(); });
+  manEl.addEventListener('input', function () { if (!sensorOn) heading = +manEl.value; manV.textContent = manEl.value + '°'; });
+  $('resetBtn').addEventListener('click', function () {
+    sizeEl.value = 70; offEl.value = 0; manEl.value = 0; zoomEl.value = 100;
+    applyAll(); manV.textContent = '0°'; if (!sensorOn) heading = 0; changed();
+  });
+
+  // ---- 折叠面板 ----
+  toggle.addEventListener('click', function () {
+    var hide = !panel.classList.contains('hidden');
+    panel.classList.toggle('hidden', hide);
+    toggle.textContent = hide ? '▲ 设置' : '▼ 设置';
+  });
+  function openPanel() { panel.classList.remove('hidden'); toggle.textContent = '▼ 设置'; }
+
+  // ---- 全屏 ----
+  function setFull(on) {
+    full = on;
+    app.classList.toggle('full', on);
+    fullBtn.textContent = on ? '退出全屏' : '全屏';
+    if (on) {
+      panel.classList.add('hidden'); toggle.textContent = '▲ 设置';
+      try { var p = document.documentElement.requestFullscreen && !document.fullscreenElement && document.documentElement.requestFullscreen(); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+    } else {
+      try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
+    }
+    sizeCompass();
+  }
+  fullBtn.addEventListener('click', function () { setFull(!full); });
+  followBtn.addEventListener('click', function () {
+    follow = !follow;
+    followBtn.textContent = '跟随我: ' + (follow ? '开' : '关');
+    followBtn.classList.toggle('on', follow);
+  });
+  function applyFollow() {
+    var t = 'translate(-50%,-50%)';
+    if (full && follow && cur && startPt && nw) {
+      var q = toImg(cur.e, cur.n);
+      var dx = (q.x - nw / 2) * fitScale, dy = (q.y - nh / 2) * fitScale;
+      var o = offEl.value * Math.PI / 180;
+      var x = dx * Math.cos(o) - dy * Math.sin(o), y = dx * Math.sin(o) + dy * Math.cos(o);
+      t += ' translate(' + (-x) + 'px,' + (-y) + 'px)';
+    }
+    if (t !== lastT) { mapBox.style.transform = t; lastT = t; }
+  }
+
+  // ================= 图片载入 =================
+  function loadBlob(blob, meta) {
+    if (objUrl) URL.revokeObjectURL(objUrl);
+    objUrl = URL.createObjectURL(blob);
+    currentBlob = blob;
+    mapImg.onload = function () {
+      nw = mapImg.naturalWidth; nh = mapImg.naturalHeight;
+      ov.setAttribute('viewBox', '0 0 ' + nw + ' ' + nh);
+      mapWrap.style.display = 'block';
+      hint.style.display = 'none';
+      calPts = []; measurePts = []; cur = null; anchor = null; fixCount = 0;
+      if (meta) {
+        startPt = meta.startPt || null; track = meta.track || []; dist = meta.dist || 0;
+        setTimer(meta.elapsed || 0);
+        sizeEl.value = meta.size; offEl.value = meta.offset; metersEl.value = meta.metersW; zoomEl.value = meta.zoom || 100;
+      } else {
+        startPt = null; track = []; dist = 0;
+        setTimer(0);
+      }
+      applyAll(); render();
+    };
+    mapImg.src = objUrl;
+  }
+  $('file').addEventListener('change', function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (!f) return;
+    if (tracking) stopTrack();
+    currentId = null; currentName = ''; presetSel.value = '';
+    loadBlob(f, null);
+    info.textContent = '已载入图片。点「保存当前」可存为预设';
+  });
+
+  // ================= 指南针传感器 =================
+  function onOrient(e) {
+    var h = null;
+    if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
+    else if (e.absolute === true && e.alpha !== null) h = (360 - e.alpha) % 360;
+    else if (e.alpha !== null && !window.__absSeen) h = (360 - e.alpha) % 360;
+    if (h === null || isNaN(h)) return;
+    var so = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+    heading = (h + so + 360) % 360;
+    sensorOn = true;
+  }
+  function onAbs(e) { window.__absSeen = true; onOrient(e); }
+  $('startBtn').addEventListener('click', function () {
+    var btn = this;
+    function bind() {
+      window.addEventListener('deviceorientationabsolute', onAbs, true);
+      window.addEventListener('deviceorientation', onOrient, true);
+      btn.textContent = '指南针已开启';
+      setTimeout(function () { if (!sensorOn) btn.textContent = '未检测到传感器，可用手动方向'; }, 2500);
+    }
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission().then(function (s) {
+        if (s === 'granted') bind(); else btn.textContent = '权限被拒绝';
+      }).catch(function () { btn.textContent = '需要 HTTPS 才能使用'; });
+    } else { bind(); }
+  });
+
+  // ================= 起点 / 校准 / 路径 =================
+  function setMode(m) {
+    mode = (mode === m) ? null : m;
+    startPtBtn.classList.toggle('on', mode === 'start');
+    calBtn.classList.toggle('on', mode === 'cal');
+    measureBtn.classList.toggle('on', mode === 'measure');
+    calPts = []; measurePts = [];
+    if (mode === 'start') info.textContent = '请在地图上点一下起点的位置';
+    else if (mode === 'cal') info.textContent = '请点图上比例尺线的两端（或两个已知距离的点）';
+    else if (mode === 'measure') info.textContent = '请在地图上点两个点，量它们的距离';
+    else updateInfo();
+    render();
+  }
+  startPtBtn.addEventListener('click', function () { setMode('start'); });
+  calBtn.addEventListener('click', function () { setMode('cal'); });
+  measureBtn.addEventListener('click', function () { setMode('measure'); });
+  showBar.addEventListener('change', render);
+  $('clearBtn').addEventListener('click', function () { clearTrack(); updateInfo(); render(); changed(); });
+  function clearTrack() { track = []; cur = null; dist = 0; anchor = null; fixCount = 0; }
+
+  ov.addEventListener('click', function (e) {
+    if (!mode || !nw) return;
+    var pt = ov.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    var p = pt.matrixTransform(ov.getScreenCTM().inverse());
+    if (mode === 'start') {
+      startPt = { x: p.x, y: p.y };
+      clearTrack();
+      setMode('start');
+      changed();
+    } else if (mode === 'cal') {
+      calPts.push({ x: p.x, y: p.y });
+      if (calPts.length === 2) {
+        var px = Math.hypot(calPts[1].x - calPts[0].x, calPts[1].y - calPts[0].y);
+        var m = parseFloat(prompt('这两点之间的实际距离是多少米？（比例尺线上写的数字，如 100）', '100'));
+        var ok = m > 0 && px > 0;
+        if (ok) { metersEl.value = Math.round(m * nw / px); changed(); }
+        setMode('cal');
+        if (ok) info.textContent = '已标定：整张图宽约 ' + metersEl.value + ' 米';
+      }
+    } else if (mode === 'measure') {
+      if (measurePts.length >= 2) measurePts = [];
+      measurePts.push({ x: p.x, y: p.y });
+      if (measurePts.length === 2) {
+        var W2 = Math.max(1, parseFloat(metersEl.value) || 500);
+        var dm = Math.hypot(measurePts[1].x - measurePts[0].x, measurePts[1].y - measurePts[0].y) / nw * W2;
+        info.textContent = '这段约 ' + Math.round(dm) + ' 米（按当前比例尺）';
+      } else { info.textContent = '再点第二个点'; }
+    }
+    render();
+  });
+
+  function toImg(e, n) {
+    var o = offEl.value * Math.PI / 180;
+    var k = nw / Math.max(1, parseFloat(metersEl.value) || 500);
+    var right = e * Math.cos(o) - n * Math.sin(o);
+    var up = e * Math.sin(o) + n * Math.cos(o);
+    return { x: startPt.x + right * k, y: startPt.y - up * k };
+  }
+
+  function render() {
+    while (ov.firstChild) ov.removeChild(ov.firstChild);
+    if (!nw) return;
+    var sw = nw * 0.006, r = nw * 0.03;
+    calPts.forEach(function (c) {
+      el(ov, 'circle', { cx: c.x, cy: c.y, r: nw * 0.012, fill: '#ffd400', stroke: '#000', 'stroke-width': sw / 2 });
+    });
+    // 比例尺条（用来和图上印的比例尺对照，检查标定是否准确）
+    var W = Math.max(1, parseFloat(metersEl.value) || 500);
+    scaleInfo.textContent = '当前：整张图约 ' + Math.round(W) + ' m × ' + Math.round(W * nh / nw) + ' m';
+    if (showBar.checked) {
+      var cand = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000, 10000], L = cand[0];
+      cand.forEach(function (c) { if (c <= W * 0.25) L = c; });
+      var bl = L / W * nw, x0 = nw * 0.04, y0 = nh * 0.94, tk = nw * 0.012;
+      [['#fff', 2.8], ['#000', 1.2]].forEach(function (s) {
+        el(ov, 'path', { d: 'M' + x0 + ',' + (y0 - tk) + ' V' + (y0 + tk) + ' M' + x0 + ',' + y0 + ' H' + (x0 + bl) + ' M' + (x0 + bl) + ',' + (y0 - tk) + ' V' + (y0 + tk),
+          stroke: s[0], 'stroke-width': sw * s[1], fill: 'none', 'stroke-linecap': 'round' });
+      });
+      el(ov, 'text', { x: x0, y: y0 - tk * 1.6, fill: '#000', stroke: '#fff', 'stroke-width': sw * 1.8, 'paint-order': 'stroke',
+        'font-size': nw * 0.03, 'font-weight': 700 }, L >= 1000 ? (L / 1000) + ' km' : L + ' m');
+    }
+    // 测距线
+    measurePts.forEach(function (m) {
+      el(ov, 'circle', { cx: m.x, cy: m.y, r: nw * 0.01, fill: '#00d1ff', stroke: '#000', 'stroke-width': sw / 2 });
+    });
+    if (measurePts.length === 2) {
+      var A = measurePts[0], B = measurePts[1];
+      el(ov, 'line', { x1: A.x, y1: A.y, x2: B.x, y2: B.y, stroke: '#00d1ff', 'stroke-width': sw, 'stroke-dasharray': (sw * 3) + ' ' + (sw * 2) });
+      el(ov, 'text', { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 - nw * 0.012, 'text-anchor': 'middle', fill: '#000', stroke: '#fff', 'stroke-width': sw * 1.8,
+        'paint-order': 'stroke', 'font-size': nw * 0.03, 'font-weight': 700 }, Math.round(Math.hypot(B.x - A.x, B.y - A.y) / nw * W) + ' m');
+    }
+    if (!startPt) return;
+    if (track.length > 1) {
+      var pts = track.map(function (t) { var q = toImg(t.e, t.n); return q.x + ',' + q.y; }).join(' ');
+      el(ov, 'polyline', { points: pts, fill: 'none', stroke: '#ff7a00', 'stroke-width': sw * 1.2,
+        'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: 0.9 });
+    }
+    var x = startPt.x, y = startPt.y;
+    el(ov, 'polygon', {
+      points: x + ',' + (y - r) + ' ' + (x - r * 0.866) + ',' + (y + r * 0.5) + ' ' + (x + r * 0.866) + ',' + (y + r * 0.5),
+      fill: 'rgba(224,0,138,0.12)', stroke: '#e0008a', 'stroke-width': sw * 1.3, 'stroke-linejoin': 'round'
+    });
+    if (cur) {
+      var c = toImg(cur.e, cur.n);
+      el(ov, 'circle', { cx: c.x, cy: c.y, r: nw * 0.022, fill: 'rgba(47,140,255,0.25)' });
+      el(ov, 'circle', { cx: c.x, cy: c.y, r: nw * 0.012, fill: '#2f8cff', stroke: '#fff', 'stroke-width': sw * 0.7 });
+    }
+  }
+
+  function updateInfo() {
+    var t = tracking ? '记录中' : (track.length ? '已停止' : '未记录');
+    t += ' · 已跑 ' + Math.round(dist) + ' m';
+    var el_ = timerNow();
+    if (dist >= 30 && el_ > 0) {
+      var pm = (el_ / 60000) / (dist / 1000), pmm = Math.floor(pm), pss = Math.round((pm - pmm) * 60);
+      if (pss === 60) { pmm++; pss = 0; }
+      t += ' · 配速 ' + pmm + ':' + (pss < 10 ? '0' : '') + pss + '/km';
+    }
+    if (lastAcc !== null && tracking) t += ' · GPS ±' + Math.round(lastAcc) + 'm';
+    if (tracking && !anchor) t = '等待 GPS 定位…请站在起点别动';
+    if (currentName) t = '【' + currentName + '】' + t;
+    info.textContent = t;
+  }
+
+  // ================= GPS 记录 =================
+  function onPos(p) {
+    var c = p.coords;
+    lastAcc = c.accuracy;
+    fixCount++;
+    if (!anchor) {
+      if (c.accuracy > 30 && fixCount < 6) { updateInfo(); return; }
+      anchor = { lat: c.latitude, lon: c.longitude, cos: Math.cos(c.latitude * Math.PI / 180) };
+      track = [{ e: 0, n: 0 }]; cur = { e: 0, n: 0 }; dist = 0;
+      updateInfo(); render(); changed();
+      return;
+    }
+    if (c.accuracy > 40) { updateInfo(); return; }
+    var R = 6371000;
+    var e = (c.longitude - anchor.lon) * Math.PI / 180 * R * anchor.cos;
+    var n = (c.latitude - anchor.lat) * Math.PI / 180 * R;
+    cur = { e: e, n: n };
+    var last = track[track.length - 1];
+    var dd = Math.hypot(e - last.e, n - last.n);
+    if (dd >= 2) { track.push({ e: e, n: n }); dist += dd; changed(); }
+    updateInfo(); render();
+  }
+  function onErr(err) {
+    info.textContent = err.code === 1 ? '定位权限被拒绝（需 HTTPS 并允许定位）' : '定位失败：' + err.message;
+  }
+  recBtn.addEventListener('click', function () {
+    if (tracking) { stopTrack(); return; }
+    if (!startPt) { info.textContent = '请先上传地图，并点「设起点▲」标出起点'; openPanel(); return; }
+    if (!navigator.geolocation) { info.textContent = '此浏览器不支持定位'; return; }
+    clearTrack();
+    tracking = true;
+    setTimer(0); timerStart();
+    recBtn.textContent = '停止记录'; recBtn.classList.add('on');
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(function (l) { wakeLock = l; }); } catch (e) {}
+    updateInfo(); render();
+  });
+  function stopTrack() {
+    tracking = false;
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    try { if (wakeLock) wakeLock.release(); } catch (e) {}
+    recBtn.textContent = '开始记录'; recBtn.classList.remove('on');
+    timerPause();
+    updateInfo(); changed();
+  }
+
+  // ================= 预设（IndexedDB 保存，可退出后再用） =================
+  function idbOpen() {
+    return new Promise(function (res, rej) {
+      var r = indexedDB.open('compassMapDB', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('meta', { keyPath: 'id' }); r.result.createObjectStore('img'); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+  }
+  function idbGet(store, key) {
+    return new Promise(function (res, rej) {
+      var q = db.transaction(store).objectStore(store).get(key);
+      q.onsuccess = function () { res(q.result); }; q.onerror = function () { rej(q.error); };
+    });
+  }
+  function idbAll(store) {
+    return new Promise(function (res, rej) {
+      var q = db.transaction(store).objectStore(store).getAll();
+      q.onsuccess = function () { res(q.result); }; q.onerror = function () { rej(q.error); };
+    });
+  }
+  function idbPut(store, val, key) {
+    return new Promise(function (res, rej) {
+      var t = db.transaction(store, 'readwrite');
+      if (key === undefined) t.objectStore(store).put(val); else t.objectStore(store).put(val, key);
+      t.oncomplete = function () { res(); }; t.onerror = function () { rej(t.error); };
+    });
+  }
+  function idbDel(store, key) {
+    return new Promise(function (res, rej) {
+      var t = db.transaction(store, 'readwrite');
+      t.objectStore(store).delete(key);
+      t.oncomplete = function () { res(); }; t.onerror = function () { rej(t.error); };
+    });
+  }
+
+  function metaNow(id, name) {
+    return { id: id, name: name, updated: Date.now(), startPt: startPt,
+      metersW: parseFloat(metersEl.value) || 500, offset: +offEl.value, size: +sizeEl.value, zoom: +zoomEl.value,
+      track: track, dist: dist, elapsed: timerNow() };
+  }
+  function refreshSelect() {
+    presets.sort(function (a, b) { return b.updated - a.updated; });
+    presetSel.innerHTML = '';
+    var o = document.createElement('option'); o.value = ''; o.textContent = presets.length ? '（选择预设地点）' : '（无预设）';
+    presetSel.appendChild(o);
+    presets.forEach(function (p) {
+      var op = document.createElement('option'); op.value = p.id; op.textContent = p.name; presetSel.appendChild(op);
+    });
+    presetSel.value = currentId || '';
+  }
+  function upsert(m) {
+    var i = presets.findIndex(function (p) { return p.id === m.id; });
+    if (i >= 0) presets[i] = m; else presets.push(m);
+  }
+
+  // 有预设被选中时，改动会自动保存
+  function changed() {
+    if (!currentId || !db || autoTimer) return;
+    autoTimer = setTimeout(function () {
+      autoTimer = null;
+      if (!currentId) return;
+      var m = metaNow(currentId, currentName);
+      upsert(m);
+      idbPut('meta', m).catch(function () {});
+    }, 1500);
+  }
+
+  function savePreset(asNew) {
+    if (!db) { info.textContent = '此浏览器无法保存预设'; return; }
+    if (!nw || !currentBlob) { info.textContent = '请先上传地图'; return; }
+    var id, name;
+    if (currentId && !asNew) { id = currentId; name = currentName; }
+    else {
+      name = (prompt('给这个地点起个名字', currentName ? currentName + ' 副本' : '地点' + (presets.length + 1)) || '').trim();
+      if (!name) return;
+      var ex = presets.filter(function (p) { return p.name === name; })[0];
+      if (ex) { if (!confirm('已有同名预设，覆盖吗？')) return; id = ex.id; }
+      else id = String(Date.now());
+    }
+    var m = metaNow(id, name);
+    Promise.all([idbPut('meta', m), idbPut('img', currentBlob, id)]).then(function () {
+      currentId = id; currentName = name; upsert(m); refreshSelect();
+      try { localStorage.setItem('cm_last', id); } catch (e) {}
+      info.textContent = '已保存预设「' + name + '」';
+    }).catch(function () { info.textContent = '保存失败（可能存储空间不足）'; });
+  }
+  function loadPreset(id) {
+    if (!id) return;
+    Promise.all([idbGet('meta', id), idbGet('img', id)]).then(function (r) {
+      if (!r[0] || !r[1]) { info.textContent = '该预设数据不存在'; return; }
+      if (tracking) stopTrack();
+      currentId = id; currentName = r[0].name;
+      try { localStorage.setItem('cm_last', id); } catch (e) {}
+      presetSel.value = id;
+      loadBlob(r[1], r[0]);
+      info.textContent = '已载入预设「' + currentName + '」';
+    }).catch(function () { info.textContent = '载入失败'; });
+  }
+  presetSel.addEventListener('change', function () {
+    var id = presetSel.value;
+    if (!id) return;
+    if (!currentId && nw && !confirm('当前地图还没保存，载入预设会丢失它，继续吗？')) { presetSel.value = ''; return; }
+    loadPreset(id);
+  });
+  $('saveBtn').addEventListener('click', function () { savePreset(false); });
+  $('saveAsBtn').addEventListener('click', function () { savePreset(true); });
+  $('delBtn').addEventListener('click', function () {
+    var id = presetSel.value;
+    if (!id) { info.textContent = '请先在下拉框选一个预设'; return; }
+    var p = presets.filter(function (x) { return x.id === id; })[0];
+    if (!confirm('确定删除预设「' + (p ? p.name : '') + '」？')) return;
+    Promise.all([idbDel('meta', id), idbDel('img', id)]).then(function () {
+      presets = presets.filter(function (x) { return x.id !== id; });
+      if (currentId === id) { currentId = null; currentName = ''; }
+      refreshSelect(); info.textContent = '已删除';
+    });
+  });
+
+  // 启动：打开数据库，自动载入上次用的预设
+  try {
+    idbOpen().then(function (d) {
+      db = d; return idbAll('meta');
+    }).then(function (list) {
+      presets = list; refreshSelect();
+      var last = null; try { last = localStorage.getItem('cm_last'); } catch (e) {}
+      if (last && presets.some(function (p) { return p.id === last; })) loadPreset(last);
+    }).catch(function () { info.textContent = '此环境不支持保存预设'; });
+  } catch (e) { info.textContent = '此环境不支持保存预设'; }
+
+  // ================= 计时器 =================
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function fmt(ms) {
+    var s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+    return (h ? h + ':' + pad(m) : pad(m)) + ':' + pad(s % 60);
+  }
+  function timerNow() { return tRun ? Date.now() - tStamp : tElapsed; }
+  function setTimer(ms) {
+    tRun = false; tElapsed = ms;
+    timerBtn.textContent = ms ? '继续计时' : '开始计时';
+    timerEl.classList.remove('run');
+  }
+  function timerStart() {
+    if (tRun) return;
+    tRun = true; tStamp = Date.now() - tElapsed;
+    timerBtn.textContent = '暂停计时'; timerEl.classList.add('run');
+  }
+  function timerPause() {
+    if (!tRun) return;
+    tElapsed = Date.now() - tStamp;
+    setTimer(tElapsed);
+  }
+  function timerToggle() { if (tRun) { timerPause(); changed(); } else timerStart(); }
+  timerBtn.addEventListener('click', timerToggle);
+  timerEl.addEventListener('click', timerToggle);
+  timerResetBtn.addEventListener('click', function () { setTimer(0); changed(); });
+
+  // ================= 渲染循环 =================
+  function frame() {
+    var diff = ((heading - shown + 540) % 360) - 180;
+    shown = (shown + diff * 0.2 + 360) % 360;
+    var rot = 'rotate(' + (-shown) + 'deg)';
+    dialRotor.style.transform = rot;     // 指南针：N 永远指向真实北
+    mapRotor.style.transform = rot;      // 地图：上方永远朝北，随你转动
+    applyFollow();
+    var tt = fmt(timerNow());
+    if (tt !== lastTxt) { timerEl.textContent = tt; lastTxt = tt; }
+    var hr = Math.round(shown) % 360;
+    readout.textContent = hr + '° ' + names[Math.round(hr / 45) % 8];
+    requestAnimationFrame(frame);
+  }
+  sizeCompass();
+  frame();
+})();
+</script>
+</body>
+</html>
